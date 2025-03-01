@@ -1,4 +1,14 @@
 #include "systemcalls.h"
+#include "sys/types.h"
+#include "unistd.h"
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <wait.h>
+#include <stdlib.h>
+#include <fcntl.h>
+
 
 /**
  * @param cmd the command to execute with system()
@@ -17,6 +27,8 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
+    int ret = system(cmd);
+    if(ret < 0) return false;
     return true;
 }
 
@@ -58,7 +70,29 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    pid_t pid = fork();
+    if(pid == -1) 
+        perror("fork");
+    if(!pid) {
+        int ret = execv(command[0], command);
+        if (ret == -1) {
+          exit(2);
+          return false;
+        }
+        return true;
+    }
 
+    int status;
+    waitpid(pid, &status, 0);
+
+
+    if(WIFEXITED(status)) {
+      if(WEXITSTATUS(status))
+        return false;
+    }
+    if (WIFSIGNALED(status)) {
+      return false;
+    }
     va_end(args);
 
     return true;
@@ -92,6 +126,42 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    if (fd < 0) { perror("open"); return false;}
+    pid_t pid = fork();
+    if(pid == -1) {
+      return false;
+    }
+    if(!pid) {
+      if (dup2(fd, 1) < 0) { perror("dup2"); exit(2); return 0; }
+      close(fd);
+      int ret = execv(command[0], command); 
+      if(ret == -1) {
+        exit(1);
+        return false;
+      }
+      perror("execvp"); return 0;
+    }
+    
+    close(fd);
+    
+    int status;
+    waitpid(pid, &status, 0);
+
+    if(status != 0) {
+      return false;
+    }
+
+    if(WIFEXITED(status)) {
+      if(WEXITSTATUS(status))
+        return false;
+    }
+    if (WIFSIGNALED(status)) {
+      return false;
+    }
+
+
 
     va_end(args);
 
