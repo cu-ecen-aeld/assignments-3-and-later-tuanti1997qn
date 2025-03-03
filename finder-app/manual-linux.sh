@@ -39,7 +39,7 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
     # TODO: Add your kernel build steps here
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
-    make -j4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
+    make -j12 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
     cp arch/arm64/boot/Image ${OUTDIR}
 fi
 
@@ -96,7 +96,8 @@ sudo mknod -m 666 dev/null c 1 3
 
 # TODO: Clean and build the writer utility
 cd ${WORKSPACE}
-make
+make CROSS_COMPILE=${CROSS_COMPILE} clean
+make CROSS_COMPILE=${CROSS_COMPILE}
 
 # TODO: Copy the finder related scripts and executables to the /home directory
 # on the target rootfs
