@@ -8,7 +8,11 @@ set -u
 NUMFILES=10
 WRITESTR=AELD_IS_FUN
 WRITEDIR=/tmp/aeld-data
+WRITEFILE=/tmp/assignment4-result.txt
 username=$(cat conf/username.txt)
+THISDIR=`dirname $0`
+cd $THISDIR
+echo "start script at $THISDIR"
 
 if [ $# -lt 3 ]
 then
@@ -54,10 +58,11 @@ echo "Removing the old writer utility and compiling as a native application"
 
 for i in $( seq 1 $NUMFILES)
 do
-	./writer "$WRITEDIR/${username}$i.txt" "$WRITESTR"
+	./writer "$WRITEDIR/${username}$i.txt" "$WRITESTR" > $WRITEFILE
 done
 
 OUTPUTSTRING=$(./finder.sh "$WRITEDIR" "$WRITESTR")
+echo $OUTPUTSTRING >> $WRITEFILE
 
 # remove temporary directories
 rm -rf /tmp/aeld-data
