@@ -53,12 +53,6 @@ int main(int argc, char *argv[])
     struct addrinfo hints, *result;
     char buff[MAX_BUFF];
     
-    // daemonize the server
-    if (argc >= 2 && strcmp(argv[1], "-d") == 0)
-    {
-        syslog(LOG_INFO, "Daemonizing the server\n");
-        daemon(0, 0);
-    }
     
     // setup sys log
     openlog("aesdsocket", LOG_PID | LOG_PERROR, LOG_USER);
@@ -71,6 +65,13 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
+    // daemonize the server
+    if (argc >= 2 && strcmp(argv[1], "-d") == 0)
+    {
+        syslog(LOG_INFO, "Daemonizing the server\n");
+        daemon(0, 0);
+    }
+    
     // get address info for server
     int ret;
     memset(&hints, 0, sizeof(hints));
