@@ -12,6 +12,8 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/queue.h>
+#include <pthread.h>
 
 
 
@@ -21,21 +23,102 @@
 #define MAX_BUFF 1024
 
 int server_fd = -1 , client_fd = -1;
+int program_terminated = 0;
+pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// link list
+struct thread_node{
+    LIST_ENTRY(thread_node) entries;
+    pthread_t thread_id;
+    int client_fd;
+};
+
+LIST_HEAD(thread_list, thread_node) thread_list_head;
+
 void sigint_handler(int sig)
 {
-    if(server_fd != -1)
+    syslog(LOG_INFO, "Caught signal %d\n", sig);
+    program_terminated = 1;
+    // if(server_fd != -1)
+    // {
+    //     close(server_fd);
+    // }
+    // if(client_fd != -1)
+    // {
+    //     close(client_fd);
+    // }
+
+    // remove(LOG_FILE);
+
+    // closelog();
+    // exit(0);
+}
+
+void *serve_client(void *arg)
+{
+    struct thread_node *this_thead_data = (struct thread_node *)arg;
+    char buff[MAX_BUFF]; 
+    int ret;
+    int client_fd = this_thead_data->client_fd;
+
+    memset(buff, 0, MAX_BUFF);
+
+
+    pthread_mutex_lock(&file_lock);
+    int fd = open(LOG_FILE, O_CREAT | O_WRONLY | O_APPEND, 0666);
+    if(fd == -1)
     {
-        close(server_fd);
-    }
-    if(client_fd != -1)
-    {
+        syslog(LOG_ERR, "open error code %d\n", errno);
         close(client_fd);
+        return NULL;
     }
 
-    remove(LOG_FILE);
+    // log client data
+    
+    memset(buff, 0, MAX_BUFF);
+    // write data to file
+    while((ret = recv(client_fd, buff, MAX_BUFF, 0)) > 0)
+    {
+        syslog(LOG_INFO, "Received %d bytes, data:%s\n", ret, buff);
+        ret = write(fd, buff, ret);
+        if (buff[ret - 1] == '\n') {
+            break;
+        }
 
-    closelog();
-    exit(0);
+    }
+    close(fd);
+    
+    printf("test ret: %d\n",ret);
+    
+    // open file again to read
+    fd = open(LOG_FILE, O_RDONLY);
+    if(fd == -1) 
+    {
+        syslog(LOG_ERR, "open error code %d\n", errno);
+        close(client_fd);
+        return NULL;    
+    }
+    while ((ret = read(fd, buff, MAX_BUFF)) > 0)
+    {
+        syslog(LOG_INFO, "Read %d bytes, data:%s\n", ret, buff);
+        if(send(client_fd, buff, ret, 0) == -1)
+        {
+            syslog(LOG_ERR, "send error code %d\n", errno);
+            close(fd);
+            close(client_fd);
+            return NULL;
+        }
+        syslog(LOG_INFO, "Sent %d bytes, data:%s\n", ret, buff);
+    }
+    close(fd);
+    pthread_mutex_unlock(&file_lock);
+    
+    // free resources
+    close(client_fd);
+    LIST_REMOVE(this_thead_data, entries);
+    free(this_thead_data);
+
+    return NULL;
 }
 
 void *get_in_addr(struct sockaddr *sa)
@@ -48,12 +131,50 @@ void *get_in_addr(struct sockaddr *sa)
     return &(((struct sockaddr_in6 *)sa)->sin6_addr);
 }
 
+void *timestamp_thread(void *arg)
+{
+    while (!program_terminated)
+    {
+        // print timestamp every 10 seconds, RFC 2822 compliant
+        sleep(10);
+        time_t rawtime = time(NULL);
+        struct tm *timeinfo = localtime(&rawtime);
+        if (!timeinfo)
+        {
+            syslog(LOG_ERR, "localtime error code %d\n", errno);
+            return NULL;
+        }
+        char buffer[80];
+        strftime(buffer, 80, "timestamp: %a, %d %b %Y %T %z\n", timeinfo);
+        // write to LOG_FILE with mutex lock
+        pthread_mutex_lock(&file_lock);
+        int fd = open(LOG_FILE, O_CREAT | O_WRONLY | O_APPEND, 0666);
+        if(fd == -1)
+        {
+            syslog(LOG_ERR, "open error code %d\n", errno);
+            return NULL;
+        }
+        int ret = write(fd, buffer, strlen(buffer));
+        if(ret == -1)
+        {
+            syslog(LOG_ERR, "write error code %d\n", errno);
+            close(fd);
+            return NULL;
+        }
+        close(fd);
+        pthread_mutex_unlock(&file_lock); 
+    }
+    return NULL;
+}
+
 int main(int argc, char *argv[])
 {
     struct addrinfo hints, *result;
     char buff[MAX_BUFF];
     
-    
+    // initialize the list
+    LIST_INIT(&thread_list_head);
+
     // setup sys log
     openlog("aesdsocket", LOG_PID | LOG_PERROR, LOG_USER);
     
@@ -127,70 +248,75 @@ int main(int argc, char *argv[])
     
     freeaddrinfo(result);
 
-    while (1)
+    pthread_t timestamp_thread_id;
+    if(pthread_create(&timestamp_thread_id, NULL, timestamp_thread, NULL) != 0)
     {
-        // accept
+        syslog(LOG_ERR, "pthread_create error code %d\n", errno);
+        close(server_fd);
+        return -1;
+    }
+
+    while (!program_terminated)
+    {
+        // accept connection
         client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_size);
         if(client_fd == -1)
         {
             syslog(LOG_ERR, "accept error code %d\n", errno);
-            close(server_fd);
-            return -1;
+            // close(server_fd);
+            continue;
         }
 
-        int fd = open(LOG_FILE, O_CREAT | O_WRONLY | O_APPEND, 0666);
-        if(fd == -1)
+        struct thread_node *new_thread_node = (struct thread_node *)malloc(sizeof(struct thread_node));
+
+        inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), buff, sizeof(buff));
+        syslog(LOG_INFO, "Connection from %s\n", buff);
+        if ( !new_thread_node )
         {
-            syslog(LOG_ERR, "open error code %d\n", errno);
+            syslog(LOG_ERR, "malloc error code %d\n", errno);
             close(client_fd);
-            close(server_fd);
-            return -1;
+            continue;
         }
-
-        // log client data
-       inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), buff, sizeof(buff));
-       syslog(LOG_INFO, "Connection from %s\n", buff);
-       
-       memset(buff, 0, MAX_BUFF);
-       // write data to file
-       while((ret = recv(client_fd, buff, MAX_BUFF, 0)) > 0)
-       {
-            syslog(LOG_INFO, "Received %d bytes, data:%s\n", ret, buff);
-            ret = write(fd, buff, ret);
-            if (buff[ret - 1] == '\n') {
-                break;
-            }
-
-       }
-       close(fd);
-
-       printf("test ret: %d\n",ret);
-
-       // open file again to read
-       fd = open(LOG_FILE, O_RDONLY);
-       if(fd == -1) 
-       {
-            syslog(LOG_ERR, "open error code %d\n", errno);
+        
+        new_thread_node->client_fd = client_fd;
+        LIST_INSERT_HEAD(&thread_list_head, new_thread_node, entries);
+        ret = pthread_create(&new_thread_node->thread_id, NULL, serve_client, (void *)new_thread_node);
+        if(ret != 0)
+        {
+            syslog(LOG_ERR, "pthread_create error code %d\n", errno);
             close(client_fd);
-            close(server_fd);
-            return -1;    
-       }
-       while ((ret = read(fd, buff, MAX_BUFF)) > 0)
-       {
-            syslog(LOG_INFO, "Read %d bytes, data:%s\n", ret, buff);
-            if(send(client_fd, buff, ret, 0) == -1)
-            {
-                syslog(LOG_ERR, "send error code %d\n", errno);
-                close(fd);
-                close(client_fd);
-                close(server_fd);
-                return -1;
-            }
-            syslog(LOG_INFO, "Sent %d bytes, data:%s\n", ret, buff);
-       }
-       close(fd);
-       close(client_fd);
+            LIST_REMOVE(new_thread_node, entries);
+            free(new_thread_node);
+            continue;
+        }
     }
 
+
+
+    // clean up
+    if(server_fd != -1)
+    {
+        close(server_fd);
+    }
+    if(client_fd != -1)
+    {
+        close(client_fd);
+    }
+
+    remove(LOG_FILE);
+    
+    while (!LIST_EMPTY(&thread_list_head))
+    {
+        struct thread_node *node = LIST_FIRST(&thread_list_head);
+        pthread_cancel(node->thread_id);
+        pthread_join(node->thread_id, NULL);
+        LIST_REMOVE(node, entries);
+        free(node);
+    }
+
+    pthread_cancel(timestamp_thread_id);
+    pthread_join(timestamp_thread_id, NULL);
+    
+    closelog();
     return 0;
 }
