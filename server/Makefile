@@ -1,7 +1,7 @@
-CC=gcc
+CC ?= $(CROSS_COMPILE)gcc
 
 all:
-	$(CROSS_COMPILE)$(CC) -ggdb -Werror -Wall -o aesdsocket aesdsocket.c
+	$(CC) -ggdb -Werror -Wall -o aesdsocket aesdsocket.c
 clean:
 	@if [ -f aesdsocket ]; then rm aesdsocket; fi
 
