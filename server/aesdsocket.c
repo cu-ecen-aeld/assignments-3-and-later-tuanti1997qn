@@ -187,14 +187,19 @@ int main(int argc, char *argv[])
     sigaction(SIGTERM, &sa, NULL);
 
     // daemonize the server
+    int ret;
     if (argc >= 2 && strcmp(argv[1], "-d") == 0)
     {
         syslog(LOG_INFO, "Daemonizing the server\n");
-        daemon(0, 0);
+        ret = daemon(0, 0);
+        if(ret == -1)
+        {
+            syslog(LOG_ERR, "daemon error code %d\n", errno);
+            return -1;
+        }
     }
     
     // get address info for server
-    int ret;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
