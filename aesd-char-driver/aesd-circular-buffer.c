@@ -13,6 +13,7 @@
 #else
 #include <string.h>
 #endif
+#include <stdio.h>
 
 #include "aesd-circular-buffer.h"
 
@@ -32,6 +33,29 @@ struct aesd_buffer_entry *aesd_circular_buffer_find_entry_offset_for_fpos(struct
     /**
     * TODO: implement per description
     */
+    // If buffer is full, not have to check
+    int entry_idx =buffer->out_offs;
+    int first_count = 0;
+    while ((entry_idx != buffer->in_offs) || (first_count == 0))
+    {
+        first_count = 1;
+        if (buffer->entry[entry_idx].size == 0)
+        {
+            continue;
+        }
+        if (char_offset < buffer->entry[entry_idx].size)
+        {
+            *entry_offset_byte_rtn = char_offset;
+            return &buffer->entry[entry_idx];
+        }
+        char_offset -= buffer->entry[entry_idx].size;
+        entry_idx++;
+        if(entry_idx == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            entry_idx = 0;
+        }
+    }
+
     return NULL;
 }
 
@@ -47,6 +71,29 @@ void aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, const s
     /**
     * TODO: implement per description
     */
+    if(buffer->full)
+    {
+        buffer->entry[buffer->in_offs] = *add_entry;
+        if(buffer->in_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            buffer->in_offs = 0;
+        }
+        buffer->in_offs++;
+        buffer->out_offs= buffer->in_offs;
+    } else 
+    {
+        // circular buffer is not full, add entry
+        buffer->entry[buffer->in_offs] = *add_entry;
+        buffer->in_offs++;
+        if(buffer->in_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+        {
+            buffer->in_offs = 0;
+        }
+        if(buffer->in_offs == buffer->out_offs)
+        {
+            buffer->full = true;
+        }
+    }
 }
 
 /**
