@@ -82,15 +82,17 @@ ssize_t aesd_read(struct file *filp, char __user *buf, size_t count,
 
     if(entry->size - entry_offset_byte < count)
     {
-        count = entry->size - entry_offset_byte;
+        retval = entry->size - entry_offset_byte;
     } else 
     {
         retval = count;
     }
 
-    if(copy_to_user(buf, entry->buffptr + entry_offset_byte, count))
+    if(copy_to_user(buf, entry->buffptr + entry_offset_byte, retval))
     {
         retval = -EFAULT;
+        mutex_unlock(&dev->aesd_mutex);
+        return retval;
     }
 
     *f_pos += retval;
@@ -142,8 +144,6 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         byte_to_write = line_to_write - write_buff + 1;
     }
 
-    dev = filp->private_data;
-
     if (mutex_lock_interruptible(&dev->aesd_mutex)) {
         retval = -ERESTARTSYS;
         goto END_WRITE;
@@ -168,13 +168,15 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
         dev->buffer_entry.buffptr = NULL;
         dev->buffer_entry.size = 0;
     }
-
+    
     mutex_unlock(&dev->aesd_mutex);
-
+    *f_pos += count;
+    retval = count;
 END_WRITE:
     kfree(write_buff);
     return retval;
 }
+
 struct file_operations aesd_fops = {
     .owner =    THIS_MODULE,
     .read =     aesd_read,

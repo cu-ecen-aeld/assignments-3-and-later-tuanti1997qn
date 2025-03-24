@@ -77,11 +77,11 @@ const char *aesd_circular_buffer_add_entry(struct aesd_circular_buffer *buffer, 
         // circular buffer is full, overwrite oldest entry
         overwrote_string = buffer->entry[buffer->out_offs].buffptr;
         buffer->entry[buffer->in_offs] = *add_entry;
+        buffer->in_offs++;
         if(buffer->in_offs == AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
         {
             buffer->in_offs = 0;
         }
-        buffer->in_offs++;
         buffer->out_offs= buffer->in_offs;
     } else 
     {
