@@ -14,13 +14,22 @@
 #include <fcntl.h>
 #include <sys/queue.h>
 #include <pthread.h>
-
+#include <sys/ioctl.h>
+#include <stdint.h>
 
 
 #define PORT "9000"
 #define MAX_CONNECTIONS 10
-#define LOG_FILE "/var/tmp/aesdsocketdata"
+// #define LOG_FILE "/var/tmp/aesdsocketdata"
+#define LOG_FILE "/dev/aesdchar"
 #define MAX_BUFF 1024
+
+struct aesd_seekto {
+    uint32_t write_cmd;
+    uint32_t write_cmd_offset;
+};
+#define AESD_IOC_MAGIC 0x16
+#define AESDCHAR_IOCSEEKTO _IOWR(AESD_IOC_MAGIC, 1, struct aesd_seekto)
 
 int server_fd = -1 , client_fd = -1;
 int program_terminated = 0;
@@ -39,19 +48,19 @@ void sigint_handler(int sig)
 {
     syslog(LOG_INFO, "Caught signal %d\n", sig);
     program_terminated = 1;
-    // if(server_fd != -1)
-    // {
-    //     close(server_fd);
-    // }
-    // if(client_fd != -1)
-    // {
-    //     close(client_fd);
-    // }
+    if(server_fd != -1)
+    {
+        close(server_fd);
+    }
+    if(client_fd != -1)
+    {
+        close(client_fd);
+    }
 
     // remove(LOG_FILE);
 
     // closelog();
-    // exit(0);
+    exit(0);
 }
 
 void *serve_client(void *arg)
@@ -60,12 +69,13 @@ void *serve_client(void *arg)
     char buff[MAX_BUFF]; 
     int ret;
     int client_fd = this_thead_data->client_fd;
+    int is_command = 0;
 
-    memset(buff, 0, MAX_BUFF);
+    memset(buff, 0, MAX_BUFF);    
 
 
     pthread_mutex_lock(&file_lock);
-    int fd = open(LOG_FILE, O_CREAT | O_WRONLY | O_APPEND, 0666);
+    int fd = open(LOG_FILE, O_WRONLY);
     if(fd == -1)
     {
         syslog(LOG_ERR, "open error code %d\n", errno);
@@ -80,6 +90,10 @@ void *serve_client(void *arg)
     while((ret = recv(client_fd, buff, MAX_BUFF, 0)) > 0)
     {
         syslog(LOG_INFO, "Received %d bytes, data:%s\n", ret, buff);
+        is_command = (strncmp(buff, "AESDCHAR_IOCSEEKTO:", strlen("AESDCHAR_IOCSEEKTO:")) == 0);
+        syslog(LOG_INFO, "is_command %d \n", is_command);
+        if(is_command)
+            break;
         ret = write(fd, buff, ret);
         if (buff[ret - 1] == '\n') {
             break;
@@ -87,16 +101,49 @@ void *serve_client(void *arg)
 
     }
     close(fd);
-    
+    if (is_command) 
+    {
+        unsigned int write_cmd, write_cmd_offset;
+        if (sscanf(buff, "AESDCHAR_IOCSEEKTO:%u,%u", &write_cmd, &write_cmd_offset) == 2)
+        {
+            syslog(LOG_DEBUG, "Received ioctl command: write_cmd=%u, write_cmd_offset=%u",
+                    write_cmd, write_cmd_offset);
+            struct aesd_seekto seekto;
+            seekto.write_cmd = write_cmd;
+            seekto.write_cmd_offset = write_cmd_offset;
+            int fd = open(LOG_FILE, O_RDWR);
+            if(fd == -1)
+            {
+                syslog(LOG_ERR, "open error code %d\n", errno);
+                close(client_fd);
+                return NULL;
+            }
+
+            if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seekto) < 0)
+            {
+                syslog(LOG_ERR, "ioctl AESDCHAR_IOCSEEKTO failed: %s", strerror(errno));
+                close(fd);
+                close(client_fd);
+                return NULL;
+            }
+            syslog(LOG_INFO, "ioctl AESDCHAR_IOCSEEKTO success: write_cmd=%u, write_cmd_offset=%u",
+                    seekto.write_cmd, seekto.write_cmd_offset);
+            // close(fd);
+            // goto END;
+        }
+    }
     printf("test ret: %d\n",ret);
     
     // open file again to read
-    fd = open(LOG_FILE, O_RDONLY);
-    if(fd == -1) 
+    if(!is_command) 
     {
-        syslog(LOG_ERR, "open error code %d\n", errno);
-        close(client_fd);
-        return NULL;    
+        fd = open(LOG_FILE, O_RDONLY);
+        if(fd == -1) 
+        {
+            syslog(LOG_ERR, "open error code %d\n", errno);
+            close(client_fd);
+            return NULL;    
+        }
     }
     while ((ret = read(fd, buff, MAX_BUFF)) > 0)
     {
@@ -111,6 +158,7 @@ void *serve_client(void *arg)
         syslog(LOG_INFO, "Sent %d bytes, data:%s\n", ret, buff);
     }
     close(fd);
+    // END:
     pthread_mutex_unlock(&file_lock);
     
     // free resources
@@ -253,13 +301,13 @@ int main(int argc, char *argv[])
     
     freeaddrinfo(result);
 
-    pthread_t timestamp_thread_id;
-    if(pthread_create(&timestamp_thread_id, NULL, timestamp_thread, NULL) != 0)
-    {
-        syslog(LOG_ERR, "pthread_create error code %d\n", errno);
-        close(server_fd);
-        return -1;
-    }
+    // pthread_t timestamp_thread_id;
+    // if(pthread_create(&timestamp_thread_id, NULL, timestamp_thread, NULL) != 0)
+    // {
+    //     syslog(LOG_ERR, "pthread_create error code %d\n", errno);
+    //     close(server_fd);
+    //     return -1;
+    // }
 
     while (!program_terminated)
     {
@@ -308,7 +356,7 @@ int main(int argc, char *argv[])
         close(client_fd);
     }
 
-    remove(LOG_FILE);
+    // remove(LOG_FILE);
     
     while (!LIST_EMPTY(&thread_list_head))
     {
@@ -319,8 +367,8 @@ int main(int argc, char *argv[])
         free(node);
     }
 
-    pthread_cancel(timestamp_thread_id);
-    pthread_join(timestamp_thread_id, NULL);
+    // pthread_cancel(timestamp_thread_id);
+    // pthread_join(timestamp_thread_id, NULL);
     
     closelog();
     return 0;
